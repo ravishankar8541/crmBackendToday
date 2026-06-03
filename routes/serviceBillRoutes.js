@@ -3,7 +3,9 @@ const express = require('express');
 const router = express.Router();
 const {
     getClientServiceBilling,
-    addServicePayment
+    addServicePayment,
+     deleteServiceBill,        // ✅ ADD THIS
+    removeBillFromServiceBill
 } = require('../controllers/serviceBillController');
 
 // Auth middleware
@@ -28,5 +30,8 @@ router.use(authMiddleware);
 
 router.get('/client/:clientId', getClientServiceBilling);
 router.post('/:serviceBillId/payment', addServicePayment);
+router.delete('/:id', deleteServiceBill);
+router.put('/:id/remove-bill', removeBillFromServiceBill);
+
 
 module.exports = router;

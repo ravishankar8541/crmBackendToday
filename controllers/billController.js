@@ -8,7 +8,6 @@ const path = require('path');
 const generateBillNumber = async (retryCount = 0) => {
     const year = new Date().getFullYear();
     const month = String(new Date().getMonth() + 1).padStart(2, '0');
-    const date = String(new Date().getDate()).padStart(2, '0');
 
     const lastBill = await Bill.findOne({
         billNumber: { $regex: `INV/${year}/${month}` }
@@ -58,7 +57,7 @@ exports.createBill = async (req, res) => {
             leadOwner,
             serviceName,
             description,
-            duration, 
+            duration,
             totalAmount,
             dueDate,
             gstAmount,
@@ -163,7 +162,7 @@ exports.createBill = async (req, res) => {
             leadOwner: leadOwner || '',
             serviceName: displayServiceName,
             description: description || '',
-            duration: duration || '', 
+            duration: duration || '',
             totalAmount: parsedTotalAmount,
             dueDate: new Date(dueDate),
             gstAmount: calculatedGstAmount,
@@ -181,8 +180,14 @@ exports.createBill = async (req, res) => {
             discountType: req.body.discountType || 'percentage'
         });
 
+        if (services && Array.isArray(services) && services.length > 0 && services[0].duration) {
+            newBill.duration = services[0].duration;
+            console.log("✅ Set duration from service:", newBill.duration);
+        }
+        
         newBill.dueAmount = parsedTotalAmount - parsedInitialPayment;
         newBill.calculateBill();
+        
         if (parsedInitialPayment > 0) {
             newBill.payments.push({
                 amount: parsedInitialPayment,
@@ -222,171 +227,176 @@ exports.createBill = async (req, res) => {
 
         await newBill.save();
         console.log("✅ Bill saved successfully:", billNumber);
-
         await newBill.populate('clientId', 'name companyName email phone address gstNumber');
 
-        let serviceBillCreated = false;
-
+        // ========== ✅ SERVICE BILL CREATION - ALWAYS CREATE NEW ==========
         try {
-            console.log("🟢 Starting ServiceBill creation/update...");
+            console.log("🟢 Starting ServiceBill creation...");
 
-            // For single service
-            if (serviceName && !services) {
-                let serviceBill = await ServiceBill.findOne({
-                    clientId: clientId,
-                    serviceName: serviceName
-                });
-
-                if (!serviceBill) {
-                    // ✅ FIRST TIME - Create new service bill (WITHOUT GST)
-                    const serviceTotalWithoutGST = parsedTotalAmount - calculatedGstAmount;
-                    
-                    serviceBill = new ServiceBill({
-                        clientId: clientId,
-                        serviceName: serviceName,
-                        totalAmount: serviceTotalWithoutGST,
-                        paidAmount: parsedInitialPayment,
-                        dueAmount: serviceTotalWithoutGST - parsedInitialPayment,
-                        status: parsedInitialPayment >= parsedTotalAmount ? 'Paid' : (parsedInitialPayment > 0 ? 'Partially Paid' : 'Pending'),
-                        bills: [{ billId: newBill._id, billNumber: billNumber, amount: parsedTotalAmount, paymentReceived: parsedInitialPayment, date: new Date() }]
-                    });
-                } else {
-                    const isInstallmentBill = parsedInitialPayment === parsedTotalAmount && 
-                                               parsedTotalAmount <= serviceBill.dueAmount;
-                    
-                    console.log(`📊 Existing ServiceBill: Total=${serviceBill.totalAmount}, Paid=${serviceBill.paidAmount}, Due=${serviceBill.dueAmount}`);
-                    console.log(`📊 New bill: Amount=${parsedTotalAmount}, Paid=${parsedInitialPayment}, isInstallment=${isInstallmentBill}`);
-                    
-                    if (isInstallmentBill) {
-                        console.log(`📌 INSTALLMENT payment detected for ${serviceName}: +₹${parsedInitialPayment}`);
-                        serviceBill.paidAmount += parsedInitialPayment;
-                    } else {
-                        console.log(`📌 REGULAR bill detected for ${serviceName}: +₹${parsedTotalAmount} total, +₹${parsedInitialPayment} paid`);
-                       // serviceBill.totalAmount += parsedTotalAmount;
-                        serviceBill.paidAmount += parsedInitialPayment;
-                    }
-                    
-                    serviceBill.dueAmount = serviceBill.totalAmount - serviceBill.paidAmount;
-                    serviceBill.status = serviceBill.paidAmount >= serviceBill.totalAmount ? 'Paid' : (serviceBill.paidAmount > 0 ? 'Partially Paid' : 'Pending');
-
-                    serviceBill.bills.push({
-                        billId: newBill._id,
-                        billNumber: billNumber,
-                        amount: parsedTotalAmount,
-                        paymentReceived: parsedInitialPayment,
-                        date: new Date()
-                    });
-                }
-
-                if (parsedInitialPayment > 0) {
-                    serviceBill.payments.push({
-                        amount: parsedInitialPayment,
-                        paymentMethod: paymentMethod || 'Cash',
-                        transactionId: transactionId || '',
-                        remarks: paymentRemarks || (isInstallmentBill ? `Installment payment of ₹${parsedInitialPayment.toLocaleString('en-IN')}` : 'Payment'),
-                        receivedBy: req.user?.username || 'System',
-                        billNumber: billNumber,
-                        paymentDate: new Date()
-                    });
-                }
-
-                await serviceBill.save();
-                console.log(`✅ ServiceBill saved: Total=${serviceBill.totalAmount}, Paid=${serviceBill.paidAmount}, Due=${serviceBill.dueAmount}`);
-            }
-
-            // For multiple services
-            if (services && services.length > 0) {
-                console.log("📌 Processing MULTIPLE services, count:", services.length);
-
+            // ✅ CASE 1: MULTIPLE SERVICES
+            if (services && Array.isArray(services) && services.length > 0) {
+                console.log("📌 Creating ServiceBill for multi-service");
+                
+                let totalContractValue = 0;
+                const serviceDetails = [];
+                let contractDuration = '';
+                
                 for (const service of services) {
-                    console.log(`   Processing service: ${service.serviceName}`);
-
-                    let serviceBill = await ServiceBill.findOne({
-                        clientId: clientId,
-                        serviceName: service.serviceName
-                    });
-
-                    const quantity = service.quantity || 1;
+                    const quantity = parseFloat(service.quantity) || 1;
                     const unitPrice = parseFloat(service.unitPrice) || 0;
                     const totalPrice = quantity * unitPrice;
                     const gstRate = parseFloat(service.gstRate) || 0;
                     const gstAmountCalc = (totalPrice * gstRate) / 100;
                     const serviceTotal = totalPrice + gstAmountCalc;
+                    
+                    totalContractValue += serviceTotal;
+                    
+                    if (service.duration && !contractDuration) {
+                        contractDuration = service.duration;
+                    }
+                    
+                    serviceDetails.push({
+                        serviceName: service.serviceName,
+                        description: service.description || '',
+                        duration: service.duration || '',
+                        quantity: quantity,
+                        unitPrice: unitPrice,
+                        totalPrice: totalPrice,
+                        gstRate: gstRate,
+                        gstAmount: gstAmountCalc
+                    });
+                }
+                
+                let proportionalPayment = 0;
+                if (parsedInitialPayment > 0 && parsedTotalAmount > 0) {
+                    proportionalPayment = (parsedInitialPayment * totalContractValue) / parsedTotalAmount;
+                    proportionalPayment = Math.round(proportionalPayment);
+                }
+                
+                const contractName = serviceDetails.map(s => s.serviceName).join(' + ');
+                
+                console.log(`   Contract: ${contractName}`);
+                console.log(`   Total Value: ₹${totalContractValue}`);
+                console.log(`   Payment: ₹${proportionalPayment}`);
+                
+                // ✅ ALWAYS CREATE NEW ServiceBill
+                const serviceBill = new ServiceBill({
+                    clientId: clientId,
+                    isMultiService: true,
+                    serviceName: contractName,
+                    duration: contractDuration,
+                    services: serviceDetails,
+                    totalAmount: totalContractValue,
+                    paidAmount: proportionalPayment,
+                    dueAmount: totalContractValue - proportionalPayment,
+                    status: proportionalPayment >= totalContractValue ? 'Paid' : 
+                            proportionalPayment > 0 ? 'Partially Paid' : 'Pending',
+                    bills: [{
+                        billId: newBill._id,
+                        billNumber: billNumber,
+                        amount: totalContractValue,
+                        paymentReceived: proportionalPayment,
+                        date: new Date()
+                    }]
+                });
+                
+                if (proportionalPayment > 0) {
+                    serviceBill.payments.push({
+                        amount: Number(proportionalPayment.toFixed(2)),
+                        paymentMethod: paymentMethod || 'Cash',
+                        transactionId: transactionId || '',
+                        remarks: paymentRemarks || 'Initial payment',
+                        receivedBy: req.user?.username || 'System',
+                        billNumber: billNumber,
+                        paymentDate: new Date()
+                    });
+                }
+                
+                await serviceBill.save();
+                console.log(`✅ NEW ServiceBill created: ${contractName}`);
+            }
+            
+            // ✅ CASE 2: SINGLE SERVICE
+            else if (serviceName && (!services || services.length === 0)) {
+                console.log("📌 Processing SINGLE service:", serviceName);
+                
+                let serviceBill = await ServiceBill.findOne({
+                    clientId: clientId,
+                    serviceName: serviceName,
+                    isMultiService: { $ne: true }
+                });
 
-                    const proportionalPayment = parsedInitialPayment > 0 && parsedTotalAmount > 0 ?
-                        (parsedInitialPayment * serviceTotal) / parsedTotalAmount : 0;
+                const serviceTotal = parsedTotalAmount;
 
-                    const isInstallmentBill = proportionalPayment === serviceTotal && 
-                                               serviceTotal <= (serviceBill?.dueAmount || serviceTotal);
+                if (!serviceBill) {
+                    serviceBill = new ServiceBill({
+                        clientId: clientId,
+                        serviceName: serviceName,
+                        isMultiService: false,
+                        duration: duration || '',
+                        totalAmount: serviceTotal,
+                        paidAmount: parsedInitialPayment,
+                        dueAmount: serviceTotal - parsedInitialPayment,
+                        status: parsedInitialPayment >= serviceTotal ? 'Paid' : 
+                                (parsedInitialPayment > 0 ? 'Partially Paid' : 'Pending'),
+                        bills: [{
+                            billId: newBill._id,
+                            billNumber: billNumber,
+                            amount: serviceTotal,
+                            paymentReceived: parsedInitialPayment,
+                            date: new Date()
+                        }]
+                    });
+                } else {
+                    const billAlreadyExists = serviceBill.bills.some(b => b.billNumber === billNumber);
+                    
+                    if (!billAlreadyExists) {
+                        const isInstallmentBill = parsedInitialPayment === parsedTotalAmount &&
+                            parsedTotalAmount <= serviceBill.dueAmount;
 
-                    if (!serviceBill) {
-                        console.log(`   🆕 Creating NEW ServiceBill for: ${service.serviceName}`);
-                        serviceBill = new ServiceBill({
-                            clientId: clientId,
-                            serviceName: service.serviceName,
-                            totalAmount: serviceTotal,
-                            paidAmount: proportionalPayment,
-                            dueAmount: serviceTotal - proportionalPayment,
-                            status: proportionalPayment >= serviceTotal ? 'Paid' :
-                                proportionalPayment > 0 ? 'Partially Paid' : 'Pending',
-                            bills: [{
-                                billId: newBill._id,
-                                billNumber: billNumber,
-                                amount: serviceTotal,
-                                paymentReceived: proportionalPayment,
-                                date: new Date()
-                            }]
-                        });
-                    } else {
-                        console.log(`   📝 UPDATING existing ServiceBill for: ${service.serviceName}`);
-                        console.log(`      Old total: ${serviceBill.totalAmount}, Old paid: ${serviceBill.paidAmount}`);
-                        
                         if (isInstallmentBill) {
-                            console.log(`      📌 INSTALLMENT payment detected: +₹${proportionalPayment}`);
-                            serviceBill.paidAmount += proportionalPayment;
+                            console.log(`📌 INSTALLMENT payment: +₹${parsedInitialPayment}`);
+                            serviceBill.paidAmount += parsedInitialPayment;
                         } else {
-                            console.log(`      📌 REGULAR bill detected: +₹${serviceTotal} total, +₹${proportionalPayment} paid`);
-                            serviceBill.paidAmount += proportionalPayment;
+                            console.log(`📌 REGULAR bill: +₹${parsedTotalAmount} total, +₹${parsedInitialPayment} paid`);
+                            serviceBill.paidAmount += parsedInitialPayment;
                         }
-                        
+
                         serviceBill.dueAmount = serviceBill.totalAmount - serviceBill.paidAmount;
-                        serviceBill.status = serviceBill.paidAmount >= serviceBill.totalAmount ? 'Paid' :
-                            serviceBill.paidAmount > 0 ? 'Partially Paid' : 'Pending';
+                        serviceBill.status = serviceBill.paidAmount >= serviceBill.totalAmount ? 'Paid' : 
+                                            (serviceBill.paidAmount > 0 ? 'Partially Paid' : 'Pending');
 
                         serviceBill.bills.push({
                             billId: newBill._id,
                             billNumber: billNumber,
-                            amount: serviceTotal,
-                            paymentReceived: proportionalPayment,
+                            amount: parsedTotalAmount,
+                            paymentReceived: parsedInitialPayment,
                             date: new Date()
                         });
                     }
+                }
 
-                    if (proportionalPayment > 0) {
+                if (parsedInitialPayment > 0) {
+                    const paymentExists = serviceBill.payments.some(p => p.billNumber === billNumber);
+                    if (!paymentExists) {
                         serviceBill.payments.push({
-                            amount: proportionalPayment,
+                            amount: parsedInitialPayment,
                             paymentMethod: paymentMethod || 'Cash',
                             transactionId: transactionId || '',
-                            remarks: paymentRemarks || (isInstallmentBill ? `Installment payment` : 'Initial payment'),
+                            remarks: paymentRemarks || 'Payment',
                             receivedBy: req.user?.username || 'System',
                             billNumber: billNumber,
                             paymentDate: new Date()
                         });
                     }
-
-                    await serviceBill.save();
-                    console.log(`   ✅ ServiceBill saved for: ${service.serviceName} - Total: ${serviceBill.totalAmount}, Paid: ${serviceBill.paidAmount}, Due: ${serviceBill.dueAmount}`);
                 }
-                serviceBillCreated = true;
-            }
 
-            if (!serviceBillCreated) {
-                console.log("⚠️ No service bill was created - no service name provided");
+                await serviceBill.save();
+                console.log(`✅ ServiceBill saved for: ${serviceName}`);
             }
 
         } catch (serviceBillError) {
-            console.error('❌ Error updating service bill:', serviceBillError);
-            console.error('Error details:', serviceBillError.message);
+            console.error('❌ Error creating service bill:', serviceBillError);
         }
 
         console.log("========================================");
@@ -754,7 +764,7 @@ exports.getPaymentHistory = async (req, res) => {
 };
 
 exports.downloadBill = async (req, res) => {
-    // Keep your existing downloadBill function
+    res.status(200).json({ success: true, message: 'Download function placeholder' });
 };
 
 exports.editBill = async (req, res) => {

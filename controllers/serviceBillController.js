@@ -1,8 +1,6 @@
 const ServiceBill = require('../models/ServiceBill');
 const Bill = require('../models/Bill');
 
-// controllers/serviceBillController.js - FIXED VERSION
-
 exports.updateServiceBill = async (req, res) => {
     try {
         const { clientId, serviceName, totalAmount, billId, billNumber, initialPayment } = req.body;
@@ -13,7 +11,6 @@ exports.updateServiceBill = async (req, res) => {
         });
 
         if (!serviceBill) {
-            // CREATE NEW
             serviceBill = new ServiceBill({
                 clientId,
                 serviceName,
@@ -23,18 +20,15 @@ exports.updateServiceBill = async (req, res) => {
                 status: initialPayment >= totalAmount ? 'Paid' : (initialPayment > 0 ? 'Partially Paid' : 'Pending')
             });
         } else {
-            // ✅ FIX: For installment bills, add to totalAmount
             const isNewBill = await Bill.findById(billId);
             
             if (isNewBill && isNewBill.status === 'Paid') {
-                // This is an installment bill - add amount to total
                 serviceBill.totalAmount += totalAmount;
             }
             
             serviceBill.paidAmount += initialPayment || 0;
             serviceBill.dueAmount = serviceBill.totalAmount - serviceBill.paidAmount;
             
-            // ✅ FIX: Update status based on due amount
             if (serviceBill.dueAmount <= 0) {
                 serviceBill.status = 'Paid';
             } else if (serviceBill.paidAmount > 0) {
@@ -79,11 +73,13 @@ exports.updateServiceBill = async (req, res) => {
     }
 };
 
-// GET client service billing - FIXED to show correct due amount
+// ✅ FIXED: Get Client Service Billing
 exports.getClientServiceBilling = async (req, res) => {
     try {
         const { clientId } = req.params;
         const serviceBills = await ServiceBill.find({ clientId: clientId });
+        
+        console.log(`📊 Found ${serviceBills.length} ServiceBills for client ${clientId}`);
         
         const processedServices = serviceBills.map(service => {
             // Calculate total paid from payments array
@@ -96,15 +92,42 @@ exports.getClientServiceBilling = async (req, res) => {
             
             const dueAmount = service.totalAmount - totalPaid;
             
+            // Get display name
+            let displayName = service.serviceName;
+            if (service.isMultiService && service.services && service.services.length > 0) {
+                displayName = service.services.map(s => s.serviceName).join(' + ');
+            }
+            
+            // Create installmentBills from payments
+            const installmentBills = (service.payments || [])
+                .filter(p => p.billNumber)
+                .map((p, idx) => ({
+                    id: p._id,
+                    installmentNumber: idx + 1,
+                    amount: p.amount,
+                    date: p.paymentDate,
+                    billNumber: p.billNumber,
+                    status: 'Paid',
+                    paymentMethod: p.paymentMethod,
+                    remarks: p.remarks
+                }));
+            
+            console.log(`   Service: ${displayName}, Total: ${service.totalAmount}, Paid: ${totalPaid}, Due: ${dueAmount}`);
+            
             return {
                 _id: service._id,
-                serviceName: service.serviceName,
+                serviceName: displayName,
+                isMultiService: service.isMultiService || false,
+                services: service.services || [],
+                duration: service.duration || '',
                 totalAmount: service.totalAmount,
                 paidAmount: totalPaid,
                 dueAmount: dueAmount > 0 ? dueAmount : 0,
                 status: dueAmount <= 0 ? 'Paid' : (totalPaid > 0 ? 'Partially Paid' : 'Pending'),
                 payments: service.payments || [],
-                bills: service.bills || []
+                bills: service.bills || [],
+                installmentBills: installmentBills,
+                totalInstallments: installmentBills.length
             };
         });
         
@@ -122,7 +145,7 @@ exports.getClientServiceBilling = async (req, res) => {
             }
         });
     } catch (error) {
-        console.error('Error:', error);
+        console.error('Error in getClientServiceBilling:', error);
         return res.status(500).json({ 
             success: false, 
             message: error.message, 
@@ -147,22 +170,18 @@ exports.addServicePayment = async (req, res) => {
             });
         }
         
-        // Calculate new amounts
         const paymentAmount = parseFloat(amount);
-        const oldPaidAmount = serviceBill.paidAmount;
-        const newPaidAmount = oldPaidAmount + paymentAmount;
+        const newPaidAmount = (serviceBill.paidAmount || 0) + paymentAmount;
         
         serviceBill.paidAmount = newPaidAmount;
         serviceBill.dueAmount = serviceBill.totalAmount - newPaidAmount;
         
-        // Update status
         if (serviceBill.paidAmount >= serviceBill.totalAmount) {
             serviceBill.status = 'Paid';
         } else if (serviceBill.paidAmount > 0) {
             serviceBill.status = 'Partially Paid';
         }
         
-        // Add payment record with billNumber
         serviceBill.payments.push({
             amount: paymentAmount,
             paymentMethod: paymentMethod || 'Cash',
@@ -188,6 +207,86 @@ exports.addServicePayment = async (req, res) => {
         });
     } catch (error) {
         console.error('Add service payment error:', error);
+        return res.status(500).json({
+            success: false,
+            message: error.message
+        });
+    }
+};
+
+exports.deleteServiceBill = async (req, res) => {
+    try {
+        const { id } = req.params;
+        
+        const deletedServiceBill = await ServiceBill.findByIdAndDelete(id);
+        
+        if (!deletedServiceBill) {
+            return res.status(404).json({
+                success: false,
+                message: 'Service bill not found'
+            });
+        }
+        
+        return res.status(200).json({
+            success: true,
+            message: 'Service bill deleted successfully',
+            data: deletedServiceBill
+        });
+    } catch (error) {
+        console.error('Delete service bill error:', error);
+        return res.status(500).json({
+            success: false,
+            message: error.message
+        });
+    }
+};
+
+exports.removeBillFromServiceBill = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { billNumber } = req.body;
+        
+        const serviceBill = await ServiceBill.findById(id);
+        
+        if (!serviceBill) {
+            return res.status(404).json({
+                success: false,
+                message: 'Service bill not found'
+            });
+        }
+        
+        serviceBill.bills = serviceBill.bills.filter(b => b.billNumber !== billNumber);
+        serviceBill.payments = serviceBill.payments.filter(p => p.billNumber !== billNumber);
+        
+        serviceBill.paidAmount = serviceBill.payments.reduce((sum, p) => sum + (p.amount || 0), 0);
+        serviceBill.dueAmount = serviceBill.totalAmount - serviceBill.paidAmount;
+        
+        if (serviceBill.dueAmount <= 0) {
+            serviceBill.status = 'Paid';
+        } else if (serviceBill.paidAmount > 0) {
+            serviceBill.status = 'Partially Paid';
+        } else {
+            serviceBill.status = 'Pending';
+        }
+        
+        if (serviceBill.bills.length === 0 && serviceBill.payments.length === 0) {
+            await ServiceBill.findByIdAndDelete(id);
+            return res.status(200).json({
+                success: true,
+                message: 'Service bill deleted (no bills remaining)',
+                deleted: true
+            });
+        }
+        
+        await serviceBill.save();
+        
+        return res.status(200).json({
+            success: true,
+            message: 'Bill removed from service record',
+            data: serviceBill
+        });
+    } catch (error) {
+        console.error('Remove bill error:', error);
         return res.status(500).json({
             success: false,
             message: error.message
