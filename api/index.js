@@ -18,7 +18,7 @@ const PORT = process.env.PORT || 5000;
 dbConnection();
 
 app.use(cors({
-  origin: ['http://localhost:5173', 'http://www.viralcrm.in', 'https://viralcrm.in'],
+  origin: ['https://crm-frontend-by-ravi.vercel.app', 'http://www.viralcrm.in', 'https://viralcrm.in'],
   credentials: true,               
 }));
 app.use(express.json());
