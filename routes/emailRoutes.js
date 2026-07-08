@@ -2,15 +2,17 @@ const express = require('express');
 const router = express.Router();
 const nodemailer = require('nodemailer');
 const multer = require('multer');
-const path = require('path');
 
-// Configure multer for memory storage (for PDF attachments)
 const storage = multer.memoryStorage();
 const upload = multer({ 
   storage: storage,
-  limits: { fileSize: 10 * 1024 * 1024 }, // 10MB limit
+  limits: { fileSize: 10 * 1024 * 1024 },
   fileFilter: (req, file, cb) => {
-    if (file.mimetype === 'application/pdf' || file.mimetype === 'text/html') {
+    const allowedTypes = ['application/pdf', 'text/html'];
+    const allowedExtensions = ['.html', '.pdf'];
+    const ext = file.originalname.toLowerCase().substring(file.originalname.lastIndexOf('.'));
+    
+    if (allowedTypes.includes(file.mimetype) || allowedExtensions.includes(ext)) {
       cb(null, true);
     } else {
       cb(new Error('Only PDF and HTML files are allowed'), false);
@@ -18,11 +20,12 @@ const upload = multer({
   }
 });
 
-// Email sending endpoint
 router.post('/send-invoice', upload.single('bill'), async (req, res) => {
   try {
     const { to, subject, message, cc, bcc } = req.body;
     const file = req.file;
+
+    console.log('📧 Email request received:', { to, subject, hasFile: !!file, fileName: file?.originalname });
 
     if (!to) {
       return res.status(400).json({
@@ -38,9 +41,18 @@ router.post('/send-invoice', upload.single('bill'), async (req, res) => {
       });
     }
 
-    // Configure nodemailer transporter
+    if (!process.env.EMAIL_USER || !process.env.EMAIL_PASSWORD) {
+      console.error('❌ Email credentials missing!');
+      return res.status(500).json({
+        success: false,
+        message: 'Email server not configured.'
+      });
+    }
+
+    console.log('📧 Using email:', process.env.EMAIL_USER);
+
     const transporter = nodemailer.createTransport({
-      service: 'gmail', // or use your email service
+      service: 'gmail',
       auth: {
         user: process.env.EMAIL_USER,
         pass: process.env.EMAIL_PASSWORD
@@ -50,7 +62,10 @@ router.post('/send-invoice', upload.single('bill'), async (req, res) => {
       }
     });
 
-    // Prepare email options
+    await transporter.verify();
+    console.log('✅ Email transporter verified');
+
+    // Prepare email with attachment
     const mailOptions = {
       from: `"Viral Ads Media" <${process.env.EMAIL_USER}>`,
       to: to,
@@ -66,7 +81,6 @@ router.post('/send-invoice', upload.single('bill'), async (req, res) => {
           <div style="background-color: #f8fafc; padding: 20px; border-radius: 10px; border: 1px solid #e2e8f0;">
             <p>Dear Customer,</p>
             <p>Please find attached your invoice for the services provided.</p>
-            <p style="color: #64748b; font-size: 14px;">If you have any questions, please don't hesitate to contact us.</p>
           </div>
           <div style="margin-top: 20px; text-align: center; color: #94a3b8; font-size: 12px;">
             <p>Viral Ads Media - B-27, Khatu shyam Mandir Road, New Delhi</p>
@@ -75,70 +89,29 @@ router.post('/send-invoice', upload.single('bill'), async (req, res) => {
         </div>
       `,
       attachments: file ? [{
-        filename: file.originalname || 'invoice.pdf',
+        filename: file.originalname || 'invoice.html',
         content: file.buffer,
-        contentType: file.mimetype || 'application/pdf'
+        contentType: file.mimetype || 'text/html'
       }] : []
     };
 
-    // Send email
-    const info = await transporter.sendMail(mailOptions);
+    console.log('📎 Attachment:', file?.originalname, 'Size:', file?.size);
 
+    const info = await transporter.sendMail(mailOptions);
     console.log('✅ Email sent successfully:', info.messageId);
 
     return res.status(200).json({
       success: true,
       message: 'Email sent successfully!',
-      messageId: info.messageId
+      messageId: info.messageId,
+      attachment: file ? file.originalname : null
     });
 
   } catch (error) {
-    console.error('❌ Email sending error:', error);
+    console.error('❌ Email error:', error);
     return res.status(500).json({
       success: false,
-      message: 'Failed to send email',
-      error: error.message
-    });
-  }
-});
-
-// Test email endpoint
-router.post('/test-email', async (req, res) => {
-  try {
-    const { to } = req.body;
-
-    const transporter = nodemailer.createTransport({
-      service: 'gmail',
-      auth: {
-        user: process.env.EMAIL_USER,
-        pass: process.env.EMAIL_PASSWORD
-      }
-    });
-
-    const mailOptions = {
-      from: `"Viral Ads Media" <${process.env.EMAIL_USER}>`,
-      to: to || process.env.EMAIL_USER,
-      subject: 'Test Email from Viral Ads Media',
-      html: `
-        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
-          <h2 style="color: #ea580c;">✅ Email Configuration Test</h2>
-          <p>Your email configuration is working perfectly!</p>
-          <p style="color: #64748b;">This is a test email from Viral Ads Media Invoice System.</p>
-        </div>
-      `
-    };
-
-    await transporter.sendMail(mailOptions);
-
-    return res.status(200).json({
-      success: true,
-      message: 'Test email sent successfully!'
-    });
-  } catch (error) {
-    return res.status(500).json({
-      success: false,
-      message: 'Test email failed',
-      error: error.message
+      message: 'Failed to send email: ' + error.message
     });
   }
 });
