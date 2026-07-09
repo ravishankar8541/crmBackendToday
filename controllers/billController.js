@@ -373,7 +373,9 @@ exports.createBill = async (req, res) => {
                         amount: totalContractValue,
                         paymentReceived: proportionalPayment,
                         date: new Date()
-                    }]
+                    }],  taxType: currentTaxType,
+    gstPercentage: parseFloat(gstPercentage) || 18,
+    gstAmount: roundedGstAmount || 0
                 });
 
                 if (proportionalPayment > 0) {
@@ -620,9 +622,15 @@ exports.getBillById = async (req, res) => {
             });
         }
 
+        // ✅ FIX: Convert to object first
+        const billData = bill.toObject();
+
         return res.status(200).json({
             success: true,
-            data: bill
+            data: {
+                ...billData,
+                taxType: billData.taxType || 'CGST+SGST'
+            }
         });
 
     } catch (error) {
@@ -850,6 +858,7 @@ exports.getClientBillingSummary = async (req, res) => {
                 cgst: bill.cgst || 0,
                 sgst: bill.sgst || 0,
                 igst: bill.igst || 0,
+                 taxType: bill.taxType || 'CGST+SGST',
                 serviceName: bill.serviceName || (bill.services && bill.services[0]?.serviceName) || 'Installment Bill'
             }))
         };

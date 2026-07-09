@@ -14,7 +14,6 @@ const serviceBillSchema = new mongoose.Schema({
         type: String,
         default: null
     },
-    // ✅ ADD duration field here
     duration: {
         type: String,
         default: ''
@@ -41,6 +40,22 @@ const serviceBillSchema = new mongoose.Schema({
         min: 0
     },
     dueAmount: {
+        type: Number,
+        default: 0
+    },
+    // ✅ ADD THESE FIELDS FOR GST
+    taxType: {
+        type: String,
+        enum: ['CGST+SGST', 'IGST'],
+        default: 'CGST+SGST'
+    },
+    gstPercentage: {
+        type: Number,
+        default: 18,
+        min: 0,
+        max: 100
+    },
+    gstAmount: {
         type: Number,
         default: 0
     },

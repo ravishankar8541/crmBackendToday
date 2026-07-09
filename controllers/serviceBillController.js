@@ -73,7 +73,7 @@ exports.updateServiceBill = async (req, res) => {
     }
 };
 
-// ✅ FIXED: Get Client Service Billing
+// serviceBillController.js - getClientServiceBilling
 exports.getClientServiceBilling = async (req, res) => {
     try {
         const { clientId } = req.params;
@@ -82,7 +82,6 @@ exports.getClientServiceBilling = async (req, res) => {
         console.log(`📊 Found ${serviceBills.length} ServiceBills for client ${clientId}`);
         
         const processedServices = serviceBills.map(service => {
-            // Calculate total paid from payments array
             let totalPaid = 0;
             if (service.payments && service.payments.length > 0) {
                 service.payments.forEach(payment => {
@@ -92,13 +91,11 @@ exports.getClientServiceBilling = async (req, res) => {
             
             const dueAmount = service.totalAmount - totalPaid;
             
-            // Get display name
             let displayName = service.serviceName;
             if (service.isMultiService && service.services && service.services.length > 0) {
                 displayName = service.services.map(s => s.serviceName).join(' + ');
             }
             
-            // Create installmentBills from payments
             const installmentBills = (service.payments || [])
                 .filter(p => p.billNumber)
                 .map((p, idx) => ({
@@ -109,10 +106,31 @@ exports.getClientServiceBilling = async (req, res) => {
                     billNumber: p.billNumber,
                     status: 'Paid',
                     paymentMethod: p.paymentMethod,
-                    remarks: p.remarks
+                    remarks: p.remarks,
+                    // ✅ Installment me GST nahi hai
+                    gstAmount: 0,
+                    gstPercentage: 0,
+                    taxType: 'N/A'  // ✅ Installment ka koi GST nahi
                 }));
             
+            // ✅ 🔥 CRITICAL FIX: Parent bill ka taxType use karo, default mat daalo
+            let taxType = service.taxType || 'CGST+SGST';
+            let gstPercentage = service.gstPercentage || 0;
+            let gstAmount = service.gstAmount || 0;
+            
+            // ✅ Agar installment hai to GST 0 karo
+            const isInstallmentService = service.bills && service.bills.length > 0 && 
+                service.bills.some(b => b.amount && b.paymentReceived && b.amount === b.paymentReceived);
+            
+            if (isInstallmentService) {
+                // ✅ Installment service hai - GST nahi hai
+                taxType = service.taxType || 'CGST+SGST';  // Parent tax type show karo
+                gstPercentage = service.gstPercentage || 0;
+                gstAmount = 0;  // ✅ Installment me GST 0
+            }
+            
             console.log(`   Service: ${displayName}, Total: ${service.totalAmount}, Paid: ${totalPaid}, Due: ${dueAmount}`);
+            console.log(`   TaxType: ${taxType}, GST%: ${gstPercentage}, GST Amount: ${gstAmount}`);
             
             return {
                 _id: service._id,
@@ -127,7 +145,16 @@ exports.getClientServiceBilling = async (req, res) => {
                 payments: service.payments || [],
                 bills: service.bills || [],
                 installmentBills: installmentBills,
-                totalInstallments: installmentBills.length
+                totalInstallments: installmentBills.length,
+                // ✅ FIXED: Parent bill ke GST values use karo
+                taxType: taxType,
+                gstPercentage: gstPercentage,
+                gstAmount: gstAmount,
+                // ✅ Extra: Parent bill ka original GST store karo
+                parentTaxType: service.taxType || 'CGST+SGST',
+                parentGstPercentage: service.gstPercentage || 0,
+                parentGstAmount: service.gstAmount || 0,
+                isInstallmentService: isInstallmentService
             };
         });
         
