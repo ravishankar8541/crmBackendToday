@@ -21,6 +21,7 @@ app.use(cors({
   origin: ['https://www.viralcrm.in', 'http://localhost:5173', 'http://www.viralcrm.in', 'https://viralcrm.in'],
   credentials: true,               
 }));
+app.options('*', cors());
 app.use(express.json());
 
 app.use('/uploads', express.static(path.join(__dirname, '../uploads')));
